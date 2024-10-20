@@ -3,18 +3,63 @@
 # Add steps that test, sign, and distribute the APK, save build artifacts, and more:
 # https://docs.microsoft.com/azure/devops/pipelines/languages/android
 
+resources:
+  - repo: self
+    clean: true
+
 trigger:
 - master
 
-pool:
-  vmImage: 'macos-latest'
+jobs:
+  - job: UI Testing
+    displayName: Run compose testing
+    condition: succeeded()
+    pool:
+      vmImage: 'macos-latest'
+      steps:
+        - task: Gradle@2
+          inputs:
+            workingDirectory: ''
+            gradleWrapperFile: 'gradlew'
+            gradleOptions: '-Xmx3072m'
+            publishJUnitResults: false
+            testResultsFiles: '**/TEST-*.xml'
+            tasks: 'assembleDebug'
 
-steps:
-- task: Gradle@2
-  inputs:
-    workingDirectory: ''
-    gradleWrapperFile: 'gradlew'
-    gradleOptions: '-Xmx3072m'
-    publishJUnitResults: false
-    testResultsFiles: '**/TEST-*.xml'
-    tasks: 'assembleDebug'
+        - task: CacheBeta@0
+          displayName: 'Caching System Images for AVD'
+          inputs:
+            key: 'AVD_IMAGES_PIXEL_32'
+            path: '$(ANDROID_HOME)/system-images'
+            cacheHitVar: 'AVD_IMAGES_RESTORED'
+            continueOnError: true
+            condition: succeededOrFailed()
+
+        - bash: |
+            echo "y" | $ANDROID_HOME/tools/bin/sdkmanager --install 'system-images;android-32;google_apis;x86'
+          displayName: 'Download and install emulator image'
+          condition: ne(variables.AVD_IMAGES_RESTORED, 'true')
+
+        - bash: |
+            echo "no" | $ANDROID_HOME/tools/bin/avdmanager create avd -n android_emulator -k 'system-images;android-28;google_apis;x86' -d 17 --force
+            echo "Emulator created successfully $(ANDROID_HOME/emulator/emulator -list-avds), launching it"
+            nohup $ANDROID_HOME/emulator/emulator -avd android_emulator -skin 1080x1920 -no-snapshot -no-audio -no-boot-anim -accel auto -gpu auto -qemu -lcd-density 420 > /dev/null 2>&1 &
+            $ANDROID_HOME/platform-tools/adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed | tr -d '\r') ]]; do sleep 1; done'
+            $ANDROID_HOME/platform-tools/adb devices
+            echo "Emulator started"
+          displayName: 'Create and start emulator'
+
+        - bash: |
+            ./gradlew connectedAndroidTest --console=plain  --stacktrace
+            ./gradlew --stop
+          displayName: 'Run Compose Tests'
+          continueOnError: true
+
+        - task: PublishTestResults@2
+          displayName: 'Publish Test Results'
+          inputs:
+            testResultsFiles: '**/outputs/androidTest-results/**/TEST*.xml'
+            failTaskOnFailedTests: true
+            testRunTitle: 'Test results'
+          condition: succeededOrFailed()
+
