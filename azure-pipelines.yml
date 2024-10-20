@@ -11,7 +11,7 @@ trigger:
 - master
 
 jobs:
-  - job: UI Testing
+  - job: UI_Testing
     displayName: Run compose testing
     condition: succeeded()
     pool:
